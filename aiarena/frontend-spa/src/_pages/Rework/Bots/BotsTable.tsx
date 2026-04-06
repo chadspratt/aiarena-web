@@ -33,6 +33,7 @@ import RenderCodeLanguage from "@/_components/_display/RenderCodeLanguage";
 import { RenderRace } from "@/_components/_display/RenderRace";
 import { Link } from "react-router";
 import useStateWithLocalStorage from "@/_components/_hooks/useStateWithLocalStorage";
+import { getDateTimeISOString } from "@/_lib/dateUtils";
 
 interface BotsTableProps {
   data: BotsTable_node$key;
@@ -55,7 +56,7 @@ export default function BotsTable(props: BotsTableProps) {
       @argumentDefinitions(
         cursor: { type: "String" }
         first: { type: "Int", defaultValue: 50 }
-        orderBy: { type: "String" }
+        orderBy: { type: "String", defaultValue: "-botZipUpdated" }
         name: { type: "String" }
         botZipPubliclyDownloadable: { type: "Boolean" }
       ) {
@@ -71,6 +72,7 @@ export default function BotsTable(props: BotsTableProps) {
               id
               name
               type
+              botZipUpdated
               playsRace {
                 name
                 label
@@ -81,6 +83,7 @@ export default function BotsTable(props: BotsTableProps) {
                 username
                 type
               }
+
             }
           }
         }
@@ -168,6 +171,16 @@ export default function BotsTable(props: BotsTableProps) {
         cell: (info) => <RenderCodeLanguage type={`${info.getValue()}`} />,
         meta: { priority: 1 },
       }),
+      columnHelper.accessor((row) => row.botZipUpdated ?? "", {
+        id: "lastUpdated",
+        header: "Last Updated",
+        enableSorting: true,
+        cell: (info) => {
+          return getDateTimeISOString(info.getValue()) || "";
+        },
+        meta: { priority: 1 },
+        size: 50,
+      }),
     ],
     [columnHelper],
   );
@@ -181,6 +194,7 @@ export default function BotsTable(props: BotsTableProps) {
       author: "user__username",
       race: "plays_race",
       type: "type",
+      lastUpdated: "bot_zip_updated",
     };
     startTransition(() => {
       const sortString = parseSort(sortingMap, sorting);

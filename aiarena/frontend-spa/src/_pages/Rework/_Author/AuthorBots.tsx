@@ -2,13 +2,14 @@ import { graphql, usePaginationFragment } from "react-relay";
 import {
   createColumnHelper,
   getCoreRowModel,
+  SortingState,
   useReactTable,
   VisibilityState,
 } from "@tanstack/react-table";
 
 import { getIDFromBase64, getNodes } from "@/_lib/relayHelpers";
 
-import { Suspense, useMemo } from "react";
+import { startTransition, Suspense, useEffect, useMemo, useState } from "react";
 
 import NoMoreItems from "@/_components/_display/NoMoreItems";
 import LoadingMoreItems from "@/_components/_display/LoadingMoreItems";
@@ -23,6 +24,8 @@ import RenderCodeLanguage from "@/_components/_display/RenderCodeLanguage";
 import { RenderRace } from "@/_components/_display/RenderRace";
 import { Link } from "react-router";
 import useStateWithLocalStorage from "@/_components/_hooks/useStateWithLocalStorage";
+import { getDateTimeISOString } from "@/_lib/dateUtils";
+import { parseSort } from "@/_lib/tanstack_utils";
 
 interface AuthorBotsTableProps {
   data: AuthorBotsTable_user$key;
@@ -35,7 +38,7 @@ export default function AuthorBotsTable(props: AuthorBotsTableProps) {
       {},
     );
 
-  const { data, loadNext, hasNext } = usePaginationFragment(
+  const { data, loadNext, hasNext, refetch } = usePaginationFragment(
     graphql`
       fragment AuthorBotsTable_user on UserType
       @refetchable(queryName: "AuthorBotsTablePaginationQuery")
@@ -58,6 +61,7 @@ export default function AuthorBotsTable(props: AuthorBotsTableProps) {
               id
               name
               type
+              botZipUpdated
               playsRace {
                 name
                 label
@@ -141,11 +145,34 @@ export default function AuthorBotsTable(props: AuthorBotsTableProps) {
         cell: (info) => <RenderCodeLanguage type={`${info.getValue()}`} />,
         meta: { priority: 1 },
       }),
+      columnHelper.accessor((row) => row.botZipUpdated ?? "", {
+        id: "lastUpdated",
+        header: "Last Updated",
+        enableSorting: true,
+        cell: (info) => {
+          return getDateTimeISOString(info.getValue()) || "";
+        },
+        meta: { priority: 1 },
+        size: 50,
+      }),
     ],
     [columnHelper],
   );
 
   const { loadMoreRef } = useInfiniteScroll(() => loadNext(50), hasNext);
+  const [sorting, setSorting] = useState<SortingState>([]);
+
+  useEffect(() => {
+    const sortingMap: Record<string, string> = {
+      lastUpdated: "bot_zip_updated",
+    };
+    startTransition(() => {
+      const sortString = parseSort(sortingMap, sorting);
+      refetch({
+        orderBy: sortString,
+      });
+    });
+  }, [sorting, refetch]);
 
   const table = useReactTable({
     data: botData,
@@ -158,9 +185,11 @@ export default function AuthorBotsTable(props: AuthorBotsTableProps) {
       columnVisibility: columnVisibility ?? undefined,
     },
     state: {
+      sorting,
       columnVisibility: columnVisibility ?? {},
     },
 
+    onSortingChange: setSorting,
     onColumnVisibilityChange: (updater) => {
       const next =
         typeof updater === "function"
