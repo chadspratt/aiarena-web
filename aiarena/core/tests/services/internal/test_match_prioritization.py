@@ -11,6 +11,7 @@ from aiarena.core.models import (
     Map,
     Match,
     MatchParticipation,
+    Result,
     Round,
     User,
 )
@@ -363,3 +364,200 @@ class RoundOrderingTests(TestCase):
             match_round2.id,
             "Expected the match from round 2 since round 1's match is already started.",
         )
+
+
+class RoundClogCancellationTests(TestCase):
+    """Tests for clog detection in _attempt_to_start_a_ladder_match.
+
+    Verifies that when all bots with unstarted matches have data enabled and are
+    already in active matches, the remaining unstarted matches are cancelled so
+    the ladder can move on to the next round.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create(username="testuser", email="test@test.com")
+        self.arenaclient = ArenaClient.objects.create(trusted=True, owner=self.user)
+        self.game = Game.objects.create(name="testgame")
+        self.game_mode = GameMode.objects.create(name="testgamemode", game=self.game)
+        BotRace.create_all_races()
+        self.bot_race = BotRace.objects.first()
+        self.competition = Competition.objects.create(name="testcompetition", game_mode=self.game_mode)
+        self.competition.playable_races.add(self.bot_race)
+        self.competition.open()
+        self.match_map = Map.objects.create(name="testmap", game_mode=self.game_mode)
+        self.match_map.competitions.add(self.competition)
+
+        self.bots_service = BotsImpl()
+        self.competitions_service = Competitions()
+        self.matches_service = Matches(self.bots_service, self.competitions_service)
+
+    def _create_bot_with_data(self, name, bot_data_enabled=True):
+        bot = create_bot_for_competition(
+            competition=self.competition,
+            for_user=self.user,
+            bot_name=name,
+            bot_type="python",
+            bot_race=self.bot_race,
+        )
+        bot.bot_data_enabled = bot_data_enabled
+        bot.save()
+        return bot
+
+    def _create_round_match(self, round_obj, bot1, bot2):
+        match = Match.objects.create(map=self.match_map, round=round_obj)
+        MatchParticipation.objects.create(match=match, participant_number=1, bot=bot1)
+        MatchParticipation.objects.create(match=match, participant_number=2, bot=bot2)
+        return match
+
+    def _create_active_match(self, bot1, bot2):
+        """Create a match that is currently in progress (started, no result).
+
+        MatchParticipation defaults (use_bot_data=True, update_bot_data=True) make
+        these bots count as 'in active data-enabled matches' and exclude them from
+        the available bot pool.
+        """
+        match = Match.objects.create(map=self.match_map)
+        now = timezone.now()
+        match.started = now
+        match.first_started = now
+        match.save()
+        MatchParticipation.objects.create(match=match, participant_number=1, bot=bot1)
+        MatchParticipation.objects.create(match=match, participant_number=2, bot=bot2)
+        return match
+
+    def _complete_match(self, match, started_at=None):
+        """Simulate completing a match by creating a Result and linking it."""
+        started_at = started_at or timezone.now() - timedelta(seconds=10)
+        match.started = started_at
+        match.first_started = match.started
+        completed_at = started_at + timedelta(seconds=10)
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO core_result (type, game_steps, created, replay_file_has_been_cleaned, "
+                "arenaclient_log_has_been_cleaned) "
+                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                ["MatchCancelled", 100, completed_at, False, False],
+            )
+            result_id = cursor.fetchone()[0]
+        match.result_id = result_id
+        match.save()
+
+    def test_clogged_round_cancels_remaining_matches(self):
+        """When all bots with unstarted matches are in active data-enabled matches,
+        all remaining unstarted matches should be cancelled and the round marked complete."""
+        bot1 = self._create_bot_with_data("bot1", bot_data_enabled=True)
+        bot2 = self._create_bot_with_data("bot2", bot_data_enabled=True)
+
+        # Both bots are currently in an active data-enabled match
+        self._create_active_match(bot1, bot2)
+
+        # Create a round with an unstarted match for those same bots
+        round_obj = Round.objects.create(competition=self.competition)
+        unstarted_match = self._create_round_match(round_obj, bot1, bot2)
+
+        result = self.matches_service._attempt_to_start_a_ladder_match(self.arenaclient, round_obj)
+
+        self.assertIsNone(result)
+
+        # The unstarted match should now have a MatchCancelled result
+        unstarted_match.refresh_from_db()
+        self.assertIsNotNone(unstarted_match.result_id)
+        cancelled_result = Result.objects.get(pk=unstarted_match.result_id)
+        self.assertEqual(cancelled_result.type, "MatchCancelled")
+
+        # The round should be marked complete
+        round_obj.refresh_from_db()
+        self.assertTrue(round_obj.complete)
+
+    def test_no_cancellation_when_matches_can_start(self):
+        """When some bots are available (not in active data-enabled matches), matches
+        should start normally without any cancellation."""
+        bot1 = self._create_bot_with_data("bot1", bot_data_enabled=True)
+        bot2 = self._create_bot_with_data("bot2", bot_data_enabled=True)
+        bot3 = self._create_bot_with_data("bot3", bot_data_enabled=False)
+        bot4 = self._create_bot_with_data("bot4", bot_data_enabled=False)
+
+        # bot1 is busy, but bot2, bot3, bot4 are free
+        self._create_active_match(bot1, bot3)
+
+        # Round with two matches: one using free bots, one using busy bots
+        round_obj = Round.objects.create(competition=self.competition)
+        match_free = self._create_round_match(round_obj, bot2, bot4)
+        match_busy = self._create_round_match(round_obj, bot1, bot3)
+
+        started_match = self.matches_service._attempt_to_start_a_ladder_match(self.arenaclient, round_obj)
+
+        self.assertIsNotNone(started_match)
+
+        # The unstarted match that wasn't selected should not have been cancelled
+        match_busy.refresh_from_db()
+        self.assertIsNone(match_busy.result_id)
+        match_free.refresh_from_db()
+        # One match was started, the other should still be unstarted (not cancelled)
+        unstarted_ids = [
+            m.id for m in [match_free, match_busy] if m.id != started_match.id and m.result_id is None
+        ]
+        self.assertEqual(len(unstarted_ids), 1, "The non-started match should remain unstarted, not cancelled")
+
+    def test_no_cancellation_when_no_unstarted_matches(self):
+        """When there are no unstarted matches in the round, nothing should be cancelled."""
+        bot1 = self._create_bot_with_data("bot1", bot_data_enabled=True)
+        bot2 = self._create_bot_with_data("bot2", bot_data_enabled=True)
+
+        # Create round with a match that is already started (in progress)
+        round_obj = Round.objects.create(competition=self.competition)
+        in_progress_match = self._create_round_match(round_obj, bot1, bot2)
+        now = timezone.now()
+        in_progress_match.started = now
+        in_progress_match.first_started = now
+        in_progress_match.save()
+
+        initial_result_count = Result.objects.count()
+
+        result = self.matches_service._attempt_to_start_a_ladder_match(self.arenaclient, round_obj)
+
+        self.assertIsNone(result)
+        # No new results should have been created
+        self.assertEqual(Result.objects.count(), initial_result_count)
+
+    def test_clogged_round_only_cancels_unstarted_matches(self):
+        """When some matches in the round are in progress and the rest can't start due to
+        clogging, only the unstarted matches should be cancelled."""
+        bot1 = self._create_bot_with_data("bot1", bot_data_enabled=True)
+        bot2 = self._create_bot_with_data("bot2", bot_data_enabled=True)
+        bot3 = self._create_bot_with_data("bot3", bot_data_enabled=True)
+        bot4 = self._create_bot_with_data("bot4", bot_data_enabled=True)
+
+        # bot3 and bot4 are busy in a separate active match
+        self._create_active_match(bot3, bot4)
+
+        # Create a round where bot1 vs bot2 is in progress and bot3 vs bot4 is unstarted
+        round_obj = Round.objects.create(competition=self.competition)
+        match_in_progress = self._create_round_match(round_obj, bot1, bot2)
+        now = timezone.now()
+        match_in_progress.started = now
+        match_in_progress.first_started = now
+        match_in_progress.save()
+
+        # bot1 and bot2 are now "in active matches" (match_in_progress in the round)
+        # bot3 and bot4 are "in active matches" (separate match above)
+        # So all bots are busy and bot_ids should be empty
+        match_unstarted = self._create_round_match(round_obj, bot3, bot4)
+
+        result = self.matches_service._attempt_to_start_a_ladder_match(self.arenaclient, round_obj)
+
+        self.assertIsNone(result)
+
+        # The unstarted match should be cancelled
+        match_unstarted.refresh_from_db()
+        self.assertIsNotNone(match_unstarted.result_id)
+        cancelled_result = Result.objects.get(pk=match_unstarted.result_id)
+        self.assertEqual(cancelled_result.type, "MatchCancelled")
+
+        # The in-progress match should be untouched
+        match_in_progress.refresh_from_db()
+        self.assertIsNone(match_in_progress.result_id)
+        self.assertIsNotNone(match_in_progress.started)
+

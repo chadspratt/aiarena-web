@@ -145,6 +145,14 @@ class Matches:
                 else []
             )
 
+            # If there are unstarted matches but no available matches can be formed
+            # (all data-enabled bots are currently in active matches), cancel all
+            # remaining unstarted matches in this round to clear the clog and allow
+            # the ladder to move on to the next round.
+            if not available_ladder_matches_to_play:
+                self._cancel_remaining_round_matches(ladder_matches_to_play, for_round)
+                return None
+
             # Prioritize matches involving bots with data enabled (they can't play concurrent matches)
             # and bots that have waited the longest since their last match.
             if available_ladder_matches_to_play:
@@ -195,6 +203,32 @@ class Matches:
             if self.bots_service.available_is_more_than(bots_with_a_ladder_match_to_play, 2):
                 return self._start_and_return_a_match(requesting_ac, available_ladder_matches_to_play)
         return None
+
+    def _cancel_remaining_round_matches(self, matches_to_cancel, for_round):
+        """Cancel all remaining unstarted matches in a round because the ladder is clogged.
+
+        This happens when all bots with remaining matches have data enabled and are
+        currently in active matches, so no new matches can be started. Cancelling the
+        remaining matches allows the ladder to move on to the next round.
+        """
+        now = timezone.now()
+        cancelled_count = 0
+        for match in matches_to_cancel:
+            if match.started is not None:
+                continue  # skip matches that have been started in the meantime
+            match.result = Result.objects.create(type="MatchCancelled", game_steps=0)
+            match.started = now
+            match.first_started = now
+            match.save()
+            cancelled_count += 1
+
+        logger.info(
+            f"Cancelled {cancelled_count} remaining matches in round {for_round.id} "
+            f"because all bots with unstarted matches have data enabled and are in active matches."
+        )
+
+        if cancelled_count > 0:
+            update_round_if_completed(for_round)
 
     def _attempt_to_generate_new_round(self, competition: Competition):
         active_maps = Map.objects.filter(
