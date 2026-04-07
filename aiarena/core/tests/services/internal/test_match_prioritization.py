@@ -363,3 +363,204 @@ class RoundOrderingTests(TestCase):
             match_round2.id,
             "Expected the match from round 2 since round 1's match is already started.",
         )
+
+
+class FallbackMatchStartTests(TestCase):
+    """Tests for the fallback behavior in _attempt_to_start_a_ladder_match.
+
+    When all bots are busy with active data-updating matches, the fallback should:
+    - Select from all unstarted matches in the round.
+    - Disable bot data (use_bot_data=False, update_bot_data=False) so they can
+      run concurrently with other active data-updating matches.
+    - Actually start the match instead of blocking the queue.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create(username="testuser", email="test@test.com")
+        self.arenaclient = ArenaClient.objects.create(trusted=True, owner=self.user)
+        self.game = Game.objects.create(name="testgame")
+        self.game_mode = GameMode.objects.create(name="testgamemode", game=self.game)
+        BotRace.create_all_races()
+        self.bot_race = BotRace.objects.first()
+        self.competition = Competition.objects.create(name="testcompetition", game_mode=self.game_mode)
+        self.competition.playable_races.add(self.bot_race)
+        self.competition.open()
+        self.match_map = Map.objects.create(name="testmap", game_mode=self.game_mode)
+        self.match_map.competitions.add(self.competition)
+
+        self.bots_service = BotsImpl()
+        self.competitions_service = Competitions()
+        self.matches_service = Matches(self.bots_service, self.competitions_service)
+
+    def _create_bot_with_data(self, name, bot_data_enabled=True):
+        bot = create_bot_for_competition(
+            competition=self.competition,
+            for_user=self.user,
+            bot_name=name,
+            bot_type="python",
+            bot_race=self.bot_race,
+        )
+        bot.bot_data_enabled = bot_data_enabled
+        bot.save()
+        return bot
+
+    def _create_round_match(self, round_obj, bot1, bot2):
+        match = Match.objects.create(map=self.match_map, round=round_obj)
+        MatchParticipation.objects.create(match=match, participant_number=1, bot=bot1)
+        MatchParticipation.objects.create(match=match, participant_number=2, bot=bot2)
+        return match
+
+    def _start_match_in_progress(self, match):
+        """Start a match without completing it (no result), simulating an in-progress match."""
+        match.started = timezone.now()
+        match.first_started = match.started
+        match.save()
+
+    def test_fallback_starts_match_when_all_bots_busy_with_data(self):
+        """When all bots are in active data-updating matches, the fallback should
+        start a match with bot data disabled."""
+        bot1 = self._create_bot_with_data("bot1", bot_data_enabled=True)
+        bot2 = self._create_bot_with_data("bot2", bot_data_enabled=True)
+
+        # Create an active match between bot1 and bot2 with data (use_bot_data=True, update_bot_data=True)
+        active_round = Round.objects.create(competition=self.competition)
+        active_match = self._create_round_match(active_round, bot1, bot2)
+        self._start_match_in_progress(active_match)
+
+        # Now create a new round with an unstarted match between the same bots
+        new_round = Round.objects.create(competition=self.competition)
+        pending_match = self._create_round_match(new_round, bot1, bot2)
+
+        # Attempt to start a match — should use the fallback
+        started_match = self.matches_service._attempt_to_start_a_ladder_match(self.arenaclient, new_round)
+
+        self.assertIsNotNone(started_match, "Fallback should have started a match")
+        self.assertEqual(started_match.id, pending_match.id)
+
+    def test_fallback_disables_bot_data_on_participations(self):
+        """When the fallback fires, match participations should have
+        use_bot_data=False and update_bot_data=False."""
+        bot1 = self._create_bot_with_data("bot1", bot_data_enabled=True)
+        bot2 = self._create_bot_with_data("bot2", bot_data_enabled=True)
+
+        # Create an active data-updating match
+        active_round = Round.objects.create(competition=self.competition)
+        active_match = self._create_round_match(active_round, bot1, bot2)
+        self._start_match_in_progress(active_match)
+
+        # Create new unstarted match
+        new_round = Round.objects.create(competition=self.competition)
+        self._create_round_match(new_round, bot1, bot2)
+
+        started_match = self.matches_service._attempt_to_start_a_ladder_match(self.arenaclient, new_round)
+        self.assertIsNotNone(started_match)
+
+        # Verify bot data was disabled on the started match's participations
+        for mp in MatchParticipation.objects.filter(match=started_match):
+            self.assertFalse(mp.use_bot_data, f"use_bot_data should be False for participant {mp.participant_number}")
+            self.assertFalse(
+                mp.update_bot_data, f"update_bot_data should be False for participant {mp.participant_number}"
+            )
+
+    def test_normal_path_keeps_bot_data_enabled(self):
+        """When available bots exist (not all busy), the normal path should be used
+        and bot data should remain enabled."""
+        bot1 = self._create_bot_with_data("bot1", bot_data_enabled=True)
+        bot2 = self._create_bot_with_data("bot2", bot_data_enabled=True)
+
+        # No active matches — bots are free
+        new_round = Round.objects.create(competition=self.competition)
+        pending_match = self._create_round_match(new_round, bot1, bot2)
+
+        started_match = self.matches_service._attempt_to_start_a_ladder_match(self.arenaclient, new_round)
+        self.assertIsNotNone(started_match)
+        self.assertEqual(started_match.id, pending_match.id)
+
+        # Verify bot data is still enabled (normal path, no fallback)
+        for mp in MatchParticipation.objects.filter(match=started_match):
+            self.assertTrue(mp.use_bot_data, f"use_bot_data should remain True for participant {mp.participant_number}")
+            self.assertTrue(
+                mp.update_bot_data, f"update_bot_data should remain True for participant {mp.participant_number}"
+            )
+
+    def test_fallback_with_multiple_matches_starts_one(self):
+        """When multiple unstarted matches exist and all bots are busy,
+        the fallback should start one of them."""
+        bot1 = self._create_bot_with_data("bot1", bot_data_enabled=True)
+        bot2 = self._create_bot_with_data("bot2", bot_data_enabled=True)
+        bot3 = self._create_bot_with_data("bot3", bot_data_enabled=True)
+        bot4 = self._create_bot_with_data("bot4", bot_data_enabled=True)
+
+        # All bots are busy with active data-updating matches
+        active_round = Round.objects.create(competition=self.competition)
+        active_match1 = self._create_round_match(active_round, bot1, bot2)
+        self._start_match_in_progress(active_match1)
+        active_match2 = self._create_round_match(active_round, bot3, bot4)
+        self._start_match_in_progress(active_match2)
+
+        # Create new round with two unstarted matches
+        new_round = Round.objects.create(competition=self.competition)
+        pending_match1 = self._create_round_match(new_round, bot1, bot3)
+        pending_match2 = self._create_round_match(new_round, bot2, bot4)
+
+        started_match = self.matches_service._attempt_to_start_a_ladder_match(self.arenaclient, new_round)
+
+        self.assertIsNotNone(started_match, "Fallback should have started one of the pending matches")
+        self.assertIn(started_match.id, [pending_match1.id, pending_match2.id])
+
+    def test_fallback_does_not_affect_active_match_participations(self):
+        """The fallback should only disable bot data on unstarted matches,
+        not on the already-active matches."""
+        bot1 = self._create_bot_with_data("bot1", bot_data_enabled=True)
+        bot2 = self._create_bot_with_data("bot2", bot_data_enabled=True)
+
+        # Create an active data-updating match
+        active_round = Round.objects.create(competition=self.competition)
+        active_match = self._create_round_match(active_round, bot1, bot2)
+        self._start_match_in_progress(active_match)
+
+        # Create new unstarted match
+        new_round = Round.objects.create(competition=self.competition)
+        self._create_round_match(new_round, bot1, bot2)
+
+        self.matches_service._attempt_to_start_a_ladder_match(self.arenaclient, new_round)
+
+        # Verify active match's participations still have data enabled
+        for mp in MatchParticipation.objects.filter(match=active_match):
+            self.assertTrue(
+                mp.use_bot_data, f"Active match use_bot_data should remain True for participant {mp.participant_number}"
+            )
+            self.assertTrue(
+                mp.update_bot_data,
+                f"Active match update_bot_data should remain True for participant {mp.participant_number}",
+            )
+
+    def test_no_fallback_when_some_bots_available(self):
+        """When some bots are available (not busy), the normal path should be used.
+        Matches between available bots should be started with data enabled."""
+        bot_busy1 = self._create_bot_with_data("busy1", bot_data_enabled=True)
+        bot_busy2 = self._create_bot_with_data("busy2", bot_data_enabled=True)
+        bot_free1 = self._create_bot_with_data("free1", bot_data_enabled=True)
+        bot_free2 = self._create_bot_with_data("free2", bot_data_enabled=True)
+
+        # busy bots are in an active data-updating match
+        active_round = Round.objects.create(competition=self.competition)
+        active_match = self._create_round_match(active_round, bot_busy1, bot_busy2)
+        self._start_match_in_progress(active_match)
+
+        # Create new round with matches: one between free bots, one between busy bots
+        new_round = Round.objects.create(competition=self.competition)
+        match_free = self._create_round_match(new_round, bot_free1, bot_free2)
+        self._create_round_match(new_round, bot_busy1, bot_busy2)
+
+        started_match = self.matches_service._attempt_to_start_a_ladder_match(self.arenaclient, new_round)
+
+        self.assertIsNotNone(started_match)
+        self.assertEqual(
+            started_match.id,
+            match_free.id,
+            "Should use normal path and start the match between free bots",
+        )
+        # Verify bot data remains enabled (normal path, no fallback)
+        for mp in MatchParticipation.objects.filter(match=started_match):
+            self.assertTrue(mp.use_bot_data)
