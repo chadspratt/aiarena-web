@@ -425,25 +425,6 @@ class RoundClogCancellationTests(TestCase):
         MatchParticipation.objects.create(match=match, participant_number=2, bot=bot2)
         return match
 
-    def _complete_match(self, match, started_at=None):
-        """Simulate completing a match by creating a Result and linking it."""
-        started_at = started_at or timezone.now() - timedelta(seconds=10)
-        match.started = started_at
-        match.first_started = match.started
-        completed_at = started_at + timedelta(seconds=10)
-        from django.db import connection
-
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO core_result (type, game_steps, created, replay_file_has_been_cleaned, "
-                "arenaclient_log_has_been_cleaned) "
-                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                ["MatchCancelled", 100, completed_at, False, False],
-            )
-            result_id = cursor.fetchone()[0]
-        match.result_id = result_id
-        match.save()
-
     def test_no_cancellation_when_matches_can_start(self):
         """When some bots are available (not in active data-enabled matches), matches
         should start normally without any cancellation."""
