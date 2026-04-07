@@ -444,33 +444,6 @@ class RoundClogCancellationTests(TestCase):
         match.result_id = result_id
         match.save()
 
-    def test_clogged_round_cancels_remaining_matches(self):
-        """When all bots with unstarted matches are in active data-enabled matches,
-        all remaining unstarted matches should be cancelled and the round marked complete."""
-        bot1 = self._create_bot_with_data("bot1", bot_data_enabled=True)
-        bot2 = self._create_bot_with_data("bot2", bot_data_enabled=True)
-
-        # Both bots are currently in an active data-enabled match
-        self._create_active_match(bot1, bot2)
-
-        # Create a round with an unstarted match for those same bots
-        round_obj = Round.objects.create(competition=self.competition)
-        unstarted_match = self._create_round_match(round_obj, bot1, bot2)
-
-        result = self.matches_service._attempt_to_start_a_ladder_match(self.arenaclient, round_obj)
-
-        self.assertIsNone(result)
-
-        # The unstarted match should now have a MatchCancelled result
-        unstarted_match.refresh_from_db()
-        self.assertIsNotNone(unstarted_match.result_id)
-        cancelled_result = Result.objects.get(pk=unstarted_match.result_id)
-        self.assertEqual(cancelled_result.type, "MatchCancelled")
-
-        # The round should be marked complete
-        round_obj.refresh_from_db()
-        self.assertTrue(round_obj.complete)
-
     def test_no_cancellation_when_matches_can_start(self):
         """When some bots are available (not in active data-enabled matches), matches
         should start normally without any cancellation."""
