@@ -144,6 +144,18 @@ class Matches:
                 if bot_ids
                 else []
             )
+            if not available_ladder_matches_to_play:
+                available_ladder_matches_to_play = (
+                    list(
+                        Match.objects.raw(
+                            """
+                                SELECT cm.* from core_match cm
+                                where cm.id in %s
+                            """,
+                            (tuple(match_ids)),
+                        )
+                    )
+                )
 
             # Prioritize matches involving bots with data enabled (they can't play concurrent matches)
             # and bots that have waited the longest since their last match.
