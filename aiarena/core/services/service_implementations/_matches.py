@@ -82,9 +82,9 @@ class Matches:
         else:
             return None
 
-    def _start_and_return_a_match(self, requesting_ac: ArenaClient, matches):
+    def _start_and_return_a_match(self, requesting_ac: ArenaClient, matches, check_active_for_data_bots=True):
         for match in matches:
-            if MatchStarter.start(match, requesting_ac):
+            if MatchStarter.start(match, requesting_ac, check_active_for_data_bots):
                 return match
         return None  # No match was able to start
 
@@ -159,7 +159,8 @@ class Matches:
                     # with other active data-updating matches, to prevent queue blocking.
                     fallback_match_ids = [m.id for m in available_ladder_matches_to_play]
                     MatchParticipation.objects.filter(match_id__in=fallback_match_ids).update(update_bot_data=False)
-                    return self._start_and_return_a_match(requesting_ac, available_ladder_matches_to_play)
+                    check_active_for_data_bots = False
+                    return self._start_and_return_a_match(requesting_ac, available_ladder_matches_to_play, check_active_for_data_bots)
 
             # Prioritize matches involving bots with data enabled (they can't play concurrent matches)
             # and bots that have waited the longest since their last match.
