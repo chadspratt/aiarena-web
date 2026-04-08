@@ -145,15 +145,13 @@ class Matches:
                 else []
             )
             if not available_ladder_matches_to_play:
-                available_ladder_matches_to_play = (
-                    list(
-                        Match.objects.raw(
-                            """
-                                SELECT cm.* from core_match cm
-                                where cm.id in %s
-                            """,
-                            (tuple(match_ids),),
-                        )
+                available_ladder_matches_to_play = list(
+                    Match.objects.raw(
+                        """
+                            SELECT cm.* from core_match cm
+                            where cm.id in %s
+                        """,
+                        (tuple(match_ids),),
                     )
                 )
                 if available_ladder_matches_to_play:
