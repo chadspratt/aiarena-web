@@ -15,7 +15,7 @@ class MatchStarter:
     """
 
     @staticmethod
-    def start(match: Match, arenaclient: ArenaClient) -> bool:
+    def start(match: Match, arenaclient: ArenaClient, check_active_for_data_bots=True) -> bool:
         """
         Start the match.
         """
@@ -28,25 +28,27 @@ class MatchStarter:
             logger.warning(f"Match {match.id} failed to start unexpectedly as it was already started.")
             return False
 
+        available_participants = MatchParticipation.objects.only("id")
         # Avoid starting a match when a participant is not available
-        target_match_not_locked_by_bot_data = Q(use_bot_data=False) | Q(
-            update_bot_data=False, match__requested_by__isnull=False
-        )
-        not_in_another_match = ~Exists(
-            MatchParticipation.objects.exclude(
-                match_id=match.id,
-            ).filter(
-                bot_id=OuterRef("bot_id"),
-                use_bot_data=True,
-                update_bot_data=True,
-                match__started__isnull=False,
-                match__result=None,
+        if check_active_for_data_bots:
+            target_match_not_locked_by_bot_data = Q(use_bot_data=False) | Q(
+                update_bot_data=False, match__requested_by__isnull=False
             )
-        )
-        available_participants = MatchParticipation.objects.filter(
-            target_match_not_locked_by_bot_data | not_in_another_match,
-            match_id=match.id,
-        ).only("id")
+            not_in_another_match = ~Exists(
+                MatchParticipation.objects.exclude(
+                    match_id=match.id,
+                ).filter(
+                    bot_id=OuterRef("bot_id"),
+                    use_bot_data=True,
+                    update_bot_data=True,
+                    match__started__isnull=False,
+                    match__result=None,
+                )
+            )
+            available_participants = MatchParticipation.objects.filter(
+                target_match_not_locked_by_bot_data | not_in_another_match,
+                match_id=match.id,
+            ).only("id")
 
         if len(available_participants) < 2:
             # Todo: Commented out to avoid log spam. This used to be a last second sanity check.
