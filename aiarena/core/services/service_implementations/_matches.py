@@ -159,7 +159,7 @@ class Matches:
                     # with other active data-updating matches, to prevent queue blocking.
                     fallback_match_ids = [m.id for m in available_ladder_matches_to_play]
                     MatchParticipation.objects.filter(match_id__in=fallback_match_ids).update(
-                        use_bot_data=False, update_bot_data=False
+                        update_bot_data=False
                     )
                     return self._start_and_return_a_match(requesting_ac, available_ladder_matches_to_play)
 
