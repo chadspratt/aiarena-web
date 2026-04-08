@@ -160,7 +160,9 @@ class Matches:
                     fallback_match_ids = [m.id for m in available_ladder_matches_to_play]
                     MatchParticipation.objects.filter(match_id__in=fallback_match_ids).update(update_bot_data=False)
                     check_active_for_data_bots = False
-                    return self._start_and_return_a_match(requesting_ac, available_ladder_matches_to_play, check_active_for_data_bots)
+                    return self._start_and_return_a_match(
+                        requesting_ac, available_ladder_matches_to_play, check_active_for_data_bots
+                    )
 
             # Prioritize matches involving bots with data enabled (they can't play concurrent matches)
             # and bots that have waited the longest since their last match.
