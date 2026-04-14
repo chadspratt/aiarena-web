@@ -48,6 +48,10 @@ export default function EloChart(props: EloChartProps) {
               }
             }
           }
+          roundStarts {
+            number
+            started
+          }
         }
       }
     `,
@@ -91,6 +95,31 @@ export default function EloChart(props: EloChartProps) {
   const lastUpdated =
     eloChart?.lastUpdated != null ? Number(eloChart.lastUpdated) : null;
 
+  const roundAnnotations: Record<string, object> = {};
+  if (eloChart?.roundStarts) {
+    for (const round of eloChart.roundStarts) {
+      if (round == null) continue;
+      roundAnnotations[`round_${round.number}`] = {
+        type: "line" as const,
+        scaleID: "x",
+        value: round.started,
+        borderColor: "rgba(100,149,237,0.5)",
+        borderWidth: 1,
+        borderDash: [4, 4],
+        label: {
+          display: true,
+          content: `Round ${round.number}`,
+          position: "start" as const,
+          yAdjust: -8,
+          backgroundColor: "rgba(0,0,0,0.6)",
+          color: "rgba(100,149,237,0.9)",
+          padding: 4,
+          font: { size: 10 },
+        },
+      };
+    }
+  }
+
   return (
     <div
       style={{ height: 558 }}
@@ -123,27 +152,30 @@ export default function EloChart(props: EloChartProps) {
             legend: { display: false },
             tooltip: { mode: "index", intersect: false },
             annotation: {
-              annotations: lastUpdated
-                ? {
-                    updatedLine: {
-                      type: "line",
-                      scaleID: "x",
-                      value: lastUpdated,
-                      borderColor: "rgba(243,244,246,0.65)",
-                      borderWidth: 1,
-                      borderDash: [6, 6],
-                      label: {
-                        display: true,
-                        content: "Last updated",
-                        position: "start",
-                        yAdjust: 8,
-                        backgroundColor: "rgba(0,0,0,0.6)",
-                        color: "rgba(243,244,246,0.9)",
-                        padding: 6,
+              annotations: {
+                ...roundAnnotations,
+                ...(lastUpdated
+                  ? {
+                      updatedLine: {
+                        type: "line",
+                        scaleID: "x",
+                        value: lastUpdated,
+                        borderColor: "rgba(243,244,246,0.65)",
+                        borderWidth: 1,
+                        borderDash: [6, 6],
+                        label: {
+                          display: true,
+                          content: "Last updated",
+                          position: "start",
+                          yAdjust: 8,
+                          backgroundColor: "rgba(0,0,0,0.6)",
+                          color: "rgba(243,244,246,0.9)",
+                          padding: 6,
+                        },
                       },
-                    },
-                  }
-                : {},
+                    }
+                  : {}),
+              },
             },
           },
 
