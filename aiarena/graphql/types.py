@@ -433,10 +433,6 @@ class CompetitionParticipationType(DjangoObjectTypeWithUID):
             "title": "ELO over time",
             "lastUpdated": last_updated,
             "data": {"datasets": datasets},
-            "roundStarts": [
-                {"number": r.number, "started": r.started.timestamp() * 1000}
-                for r in competition.round_set.order_by("started")
-            ],
         }
 
     @staticmethod

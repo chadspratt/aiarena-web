@@ -28,6 +28,12 @@ ChartJS.register(
 
 interface EloChartProps {
   data: EloChart_node$key;
+  rounds: ReadonlyArray<{
+    readonly node: {
+      readonly number: number;
+      readonly started: string;
+    } | null | undefined;
+  } | null | undefined>;
 }
 
 export default function EloChart(props: EloChartProps) {
@@ -47,10 +53,6 @@ export default function EloChart(props: EloChartProps) {
                 y
               }
             }
-          }
-          roundStarts {
-            number
-            started
           }
         }
       }
@@ -96,28 +98,27 @@ export default function EloChart(props: EloChartProps) {
     eloChart?.lastUpdated != null ? Number(eloChart.lastUpdated) : null;
 
   const roundAnnotations: Record<string, object> = {};
-  if (eloChart?.roundStarts) {
-    for (const round of eloChart.roundStarts) {
-      if (round == null) continue;
-      roundAnnotations[`round_${round.number}`] = {
-        type: "line" as const,
-        scaleID: "x",
-        value: round.started,
-        borderColor: "rgba(100,149,237,0.5)",
-        borderWidth: 1,
-        borderDash: [4, 4],
-        label: {
-          display: true,
-          content: `Round ${round.number}`,
-          position: "start" as const,
-          yAdjust: -8,
-          backgroundColor: "rgba(0,0,0,0.6)",
-          color: "rgba(100,149,237,0.9)",
-          padding: 4,
-          font: { size: 10 },
-        },
-      };
-    }
+  for (const edge of props.rounds) {
+    const round = edge?.node;
+    if (!round) continue;
+    roundAnnotations[`round_${round.number}`] = {
+      type: "line" as const,
+      scaleID: "x",
+      value: new Date(round.started).getTime(),
+      borderColor: "rgba(100,149,237,0.5)",
+      borderWidth: 1,
+      borderDash: [4, 4],
+      label: {
+        display: true,
+        content: `Round ${round.number}`,
+        position: "start" as const,
+        yAdjust: -8,
+        backgroundColor: "rgba(0,0,0,0.6)",
+        color: "rgba(100,149,237,0.9)",
+        padding: 4,
+        font: { size: 10 },
+      },
+    };
   }
 
   return (
