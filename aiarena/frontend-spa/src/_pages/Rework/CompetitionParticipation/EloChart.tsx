@@ -110,7 +110,7 @@ export default function EloChart(props: EloChartProps) {
       borderDash: [4, 4],
       label: {
         display: true,
-        content: `Round ${round.number}`,
+        content: round.number === 1 ? "Round 1" : `${round.number}`,
         position: "start" as const,
         yAdjust: -8,
         backgroundColor: "rgba(0,0,0,0.6)",
